@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>farr_bringup</name>
+  <version>0.1.0</version>
+  <description>FARR launch and runtime configuration package.</description>
+  <maintainer email="root@localhost">FARR Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <depend>launch</depend>
+  <depend>launch_ros</depend>
+  <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>fast_lio</exec_depend>
+  <exec_depend>farr_chassis_bridge</exec_depend>
+  <exec_depend>farr_vision_bpu</exec_depend>
+  <exec_depend>farr_mapping</exec_depend>
+  <exec_depend>farr_pointcloud_tools</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

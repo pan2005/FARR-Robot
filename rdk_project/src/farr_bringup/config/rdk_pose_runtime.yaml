@@ -1,0 +1,20 @@
+# RDK X5 ROS2 pose inference runtime config.
+# Copy this file to /root/detect/rdk_pose_runtime.yaml on the board.
+
+model: /root/models/yolo/yolov8n-pose_bayese_640x640_nv12.bin
+image_topic: /camera/image_raw
+result_topic: /person_pose/result_image
+
+# Higher score_thres reduces false detections but may miss people.
+score_thres: 0.35
+
+# Lower nms_thres removes duplicate overlapping boxes more aggressively.
+nms_thres: 0.50
+
+# Higher kpt_conf_thres draws fewer, more reliable keypoints.
+kpt_conf_thres: 0.60
+
+resize_type: 1
+input_size: 640
+max_detections: 50
+debug_output: true

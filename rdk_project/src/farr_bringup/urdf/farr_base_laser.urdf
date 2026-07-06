@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<robot name="farr_robot_base_laser">
+  <link name="base_link" />
+  <link name="laser_link" />
+  <joint name="laser_joint" type="fixed">
+    <origin xyz="0.03169 -0.05418 0.35690" rpy="3.141592653589793 0 -1.570796326794897" />
+    <parent link="base_link" />
+    <child link="laser_link" />
+  </joint>
+</robot>

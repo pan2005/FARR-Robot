@@ -1,0 +1,63 @@
+﻿from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument('z_min', default_value='0.05'),
+        DeclareLaunchArgument('z_max', default_value='0.45'),
+        DeclareLaunchArgument('resolution', default_value='0.05'),
+        DeclareLaunchArgument('map_size_x', default_value='24.0'),
+        DeclareLaunchArgument('map_size_y', default_value='24.0'),
+        DeclareLaunchArgument('max_range', default_value='10.0'),
+        DeclareLaunchArgument('mount_roll', default_value='0.0'),
+        DeclareLaunchArgument('mount_pitch', default_value='0.0'),
+        DeclareLaunchArgument('mount_yaw', default_value='0.0'),
+        Node(
+            package='farr_mapping',
+            executable='slice_mapper',
+            name='farr_slice_mapper',
+            output='screen',
+            parameters=[{
+                'input_cloud_topic': '/cloud_registered',
+                'map_topic': '/farr_2_5d_map',
+                'obstacle_cloud_topic': '/farr_obstacle_cloud',
+                'map_frame': 'odom',
+                'transform_cloud_to_map_frame': True,
+                'z_min': LaunchConfiguration('z_min'),
+                'z_max': LaunchConfiguration('z_max'),
+                'mount_roll': LaunchConfiguration('mount_roll'),
+                'mount_pitch': LaunchConfiguration('mount_pitch'),
+                'mount_yaw': LaunchConfiguration('mount_yaw'),
+                'resolution': LaunchConfiguration('resolution'),
+                'map_size_x': LaunchConfiguration('map_size_x'),
+                'map_size_y': LaunchConfiguration('map_size_y'),
+                'max_range': LaunchConfiguration('max_range'),
+                'odom_topic': '/farr_base_odom',
+                'self_filter_enabled': True,
+                'self_filter_front': 0.46,
+                'self_filter_rear': 0.46,
+                'self_filter_left': 0.38,
+                'self_filter_right': 0.38,
+                'self_filter_corner_radius': 0.05,
+                'inflation_radius': 0.20,
+                'use_relative_height': True,
+                'ground_quantile': 0.95,
+                'vertical_axis_sign': 1.0,
+                'fit_ground_plane': True,
+                'ground_candidate_quantile': 0.65,
+                'ground_plane_refine_distance': 0.10,
+                'ground_plane_min_points': 100,
+                'obstacle_min_height': 0.12,
+                'obstacle_max_height': 0.45,
+                'hit_threshold': 3,
+                'publish_period': 2.0,
+                'process_every_n_clouds': 2,
+                'unknown_as_free': True,
+                'save_directory': '/root/farr_maps',
+                'save_name': 'farr_2_5d_map',
+            }],
+        ),
+    ])
