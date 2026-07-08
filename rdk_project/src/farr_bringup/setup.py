@@ -23,7 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'odom_tf_broadcaster = farr_bringup.odom_tf_broadcaster:main',
+            'imu_static_guard = farr_bringup.imu_static_guard:main',
         ],
     },
 )
-

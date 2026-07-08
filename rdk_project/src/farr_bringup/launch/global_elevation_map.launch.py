@@ -1,14 +1,19 @@
+from pathlib import Path
+
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-from pathlib import Path
 
 
 def generate_launch_description():
-    mapping_launch = Path(FindPackageShare('farr_mapping').find('farr_mapping')) / 'launch' / 'mapping_2_5d.launch.py'
+    elevation_launch = (
+        Path(FindPackageShare('farr_mapping').find('farr_mapping')) /
+        'launch' /
+        'global_elevation_map.launch.py'
+    )
     urdf_path = '/root/farr_robot_ws/install/farr_bringup/share/farr_bringup/urdf/farr_base_laser.urdf'
 
     robot_state_publisher_node = Node(
@@ -43,5 +48,5 @@ def generate_launch_description():
     return LaunchDescription([
         robot_state_publisher_node,
         odom_tf_node,
-        IncludeLaunchDescription(PythonLaunchDescriptionSource(str(mapping_launch))),
+        IncludeLaunchDescription(PythonLaunchDescriptionSource(str(elevation_launch))),
     ])

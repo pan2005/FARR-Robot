@@ -51,8 +51,8 @@ def generate_launch_description():
             parameters=[{
                 'port': '/dev/ttyS1',
                 'baud': 115200,
-                'send_hz': 20.0,
-                'cmd_timeout': 0.35,
+                'send_hz': 50.0,
+                'cmd_timeout': 0.12,
                 'linear_scale': 1000.0,
                 'angular_scale': 1000.0,
                 'max_vx': 350.0,

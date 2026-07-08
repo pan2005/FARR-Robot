@@ -22,6 +22,7 @@ setup(
         'console_scripts': [
             'slice_mapper = farr_mapping.slice_mapper:main',
             'slice_cloud = farr_mapping.slice_cloud:main',
+            'global_elevation_mapper = farr_mapping.global_elevation_mapper:main',
         ],
     },
 )

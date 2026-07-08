@@ -41,8 +41,12 @@ class SliceMapper(Node):
         self.declare_parameter('ground_candidate_quantile', 0.65)
         self.declare_parameter('ground_plane_refine_distance', 0.10)
         self.declare_parameter('ground_plane_min_points', 100)
+        self.declare_parameter('ground_inlier_ratio_min', 0.45)
+        self.declare_parameter('ground_residual_std_max', 0.06)
         self.declare_parameter('obstacle_min_height', 0.08)
         self.declare_parameter('obstacle_max_height', 0.45)
+        self.declare_parameter('low_obstacle_height', 0.15)
+        self.declare_parameter('low_obstacle_extra_points', 2)
         self.declare_parameter('min_range', 0.35)
         self.declare_parameter('max_range', 12.0)
         self.declare_parameter('odom_topic', '/Odometry')
@@ -54,7 +58,10 @@ class SliceMapper(Node):
         self.declare_parameter('self_filter_corner_radius', 0.05)
         self.declare_parameter('hit_threshold', 1)
         self.declare_parameter('max_hit_count', 20)
+        self.declare_parameter('hit_decay_per_frame', 1)
+        self.declare_parameter('min_points_per_cell', 2)
         self.declare_parameter('inflation_radius', 0.18)
+        self.declare_parameter('debug_period', 2.0)
         self.declare_parameter('publish_period', 1.0)
         self.declare_parameter('process_every_n_clouds', 2)
         self.declare_parameter('unknown_as_free', True)
@@ -86,8 +93,12 @@ class SliceMapper(Node):
         self.ground_plane_refine_distance = float(
             self.get_parameter('ground_plane_refine_distance').value)
         self.ground_plane_min_points = int(self.get_parameter('ground_plane_min_points').value)
+        self.ground_inlier_ratio_min = float(self.get_parameter('ground_inlier_ratio_min').value)
+        self.ground_residual_std_max = float(self.get_parameter('ground_residual_std_max').value)
         self.obstacle_min_height = float(self.get_parameter('obstacle_min_height').value)
         self.obstacle_max_height = float(self.get_parameter('obstacle_max_height').value)
+        self.low_obstacle_height = float(self.get_parameter('low_obstacle_height').value)
+        self.low_obstacle_extra_points = max(0, int(self.get_parameter('low_obstacle_extra_points').value))
         self.min_range = float(self.get_parameter('min_range').value)
         self.max_range = float(self.get_parameter('max_range').value)
         self.odom_topic = str(self.get_parameter('odom_topic').value)
@@ -99,7 +110,10 @@ class SliceMapper(Node):
         self.self_filter_corner_radius = float(self.get_parameter('self_filter_corner_radius').value)
         self.hit_threshold = int(self.get_parameter('hit_threshold').value)
         self.max_hit_count = int(self.get_parameter('max_hit_count').value)
+        self.hit_decay_per_frame = max(0, int(self.get_parameter('hit_decay_per_frame').value))
+        self.min_points_per_cell = max(1, int(self.get_parameter('min_points_per_cell').value))
         self.inflation_radius = float(self.get_parameter('inflation_radius').value)
+        self.debug_period = max(0.1, float(self.get_parameter('debug_period').value))
         self.unknown_as_free = bool(self.get_parameter('unknown_as_free').value)
         self.process_every_n_clouds = max(1, int(self.get_parameter('process_every_n_clouds').value))
         self.save_directory = Path(str(self.get_parameter('save_directory').value))
@@ -116,6 +130,7 @@ class SliceMapper(Node):
         self.cloud_count = 0
         self.received_clouds = 0
         self.accepted_points = 0
+        self.last_debug_time = self.get_clock().now()
         self.robot_pose = None
         self.tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -287,16 +302,32 @@ class SliceMapper(Node):
         out.data = points.tobytes()
         self.obstacle_cloud_publisher.publish(out)
 
+    def _ground_debug(self, **kwargs):
+        defaults = {
+            'quality_ok': True,
+            'used_plane': False,
+            'reason': 'ok',
+            'candidate_count': 0,
+            'inlier_ratio': 1.0,
+            'residual_std': 0.0,
+        }
+        defaults.update(kwargs)
+        return defaults
+
     def _height_above_ground(self, x, y, z, base_mask):
         ground_z = float(np.quantile(z[base_mask], self.ground_quantile))
         if not self.fit_ground_plane:
-            return self.vertical_axis_sign * (z - ground_z)
+            return self.vertical_axis_sign * (z - ground_z), self._ground_debug(reason='quantile_only')
 
         valid_x = x[base_mask]
         valid_y = y[base_mask]
         valid_z = z[base_mask]
         if valid_z.size < self.ground_plane_min_points:
-            return self.vertical_axis_sign * (z - ground_z)
+            return self.vertical_axis_sign * (z - ground_z), self._ground_debug(
+                quality_ok=False,
+                reason='too_few_ground_points',
+                candidate_count=int(valid_z.size),
+            )
 
         if self.vertical_axis_sign < 0.0:
             candidate_limit = np.quantile(valid_z, self.ground_candidate_quantile)
@@ -305,8 +336,13 @@ class SliceMapper(Node):
             candidate_limit = np.quantile(valid_z, 1.0 - self.ground_candidate_quantile)
             candidates = valid_z <= candidate_limit
 
-        if np.count_nonzero(candidates) < self.ground_plane_min_points:
-            return self.vertical_axis_sign * (z - ground_z)
+        candidate_count = int(np.count_nonzero(candidates))
+        if candidate_count < self.ground_plane_min_points:
+            return self.vertical_axis_sign * (z - ground_z), self._ground_debug(
+                quality_ok=False,
+                reason='too_few_plane_candidates',
+                candidate_count=candidate_count,
+            )
 
         try:
             design = np.column_stack((
@@ -329,9 +365,65 @@ class SliceMapper(Node):
                 ))
                 coefficients = np.linalg.lstsq(design, valid_z[refine], rcond=None)[0]
             ground_plane = coefficients[0] * x + coefficients[1] * y + coefficients[2]
-            return self.vertical_axis_sign * (z - ground_plane)
+            valid_ground = coefficients[0] * valid_x + coefficients[1] * valid_y + coefficients[2]
+            residual = valid_z - valid_ground
+            inliers = np.abs(residual) <= self.ground_plane_refine_distance
+            inlier_ratio = float(np.count_nonzero(inliers) / valid_z.size)
+            residual_std = float(np.std(residual[inliers] if np.any(inliers) else residual))
+            quality_ok = (
+                inlier_ratio >= self.ground_inlier_ratio_min and
+                residual_std <= self.ground_residual_std_max
+            )
+            return self.vertical_axis_sign * (z - ground_plane), self._ground_debug(
+                quality_ok=quality_ok,
+                used_plane=True,
+                reason='ok' if quality_ok else 'poor_plane_fit',
+                candidate_count=candidate_count,
+                inlier_ratio=inlier_ratio,
+                residual_std=residual_std,
+            )
         except np.linalg.LinAlgError:
-            return self.vertical_axis_sign * (z - ground_z)
+            return self.vertical_axis_sign * (z - ground_z), self._ground_debug(
+                quality_ok=False,
+                reason='plane_solve_failed',
+                candidate_count=candidate_count,
+            )
+
+    def _maybe_log_mapping_debug(self, count, base_points, ground_info, obstacle_points, written_cells):
+        now = self.get_clock().now()
+        if (now - self.last_debug_time).nanoseconds < int(self.debug_period * 1e9):
+            return
+        self.last_debug_time = now
+        self.get_logger().info(
+            '2.5D frame: '
+            f'input={count}, base={base_points}, '
+            f'ground_candidates={ground_info.get("candidate_count", 0)}, '
+            f'ground_inlier={ground_info.get("inlier_ratio", 0.0):.2f}, '
+            f'ground_std={ground_info.get("residual_std", 0.0):.3f}m, '
+            f'obstacle_points={obstacle_points}, written_cells={written_cells}'
+        )
+
+    def _decay_observed_cells(self, x, y, base_mask, hit_cell_ids):
+        if self.hit_decay_per_frame <= 0:
+            return
+
+        ix = np.floor((x[base_mask] - self.origin_x) / self.resolution).astype(np.int32)
+        iy = np.floor((y[base_mask] - self.origin_y) / self.resolution).astype(np.int32)
+        inside = (ix >= 0) & (ix < self.width) & (iy >= 0) & (iy < self.height)
+        if not np.any(inside):
+            return
+
+        observed_ids = np.unique((iy[inside] * self.width + ix[inside]).astype(np.int64))
+        if hit_cell_ids.size > 0:
+            observed_ids = np.setdiff1d(observed_ids, hit_cell_ids, assume_unique=False)
+        if observed_ids.size <= 0:
+            return
+
+        iy_obs = (observed_ids // self.width).astype(np.int32)
+        ix_obs = (observed_ids % self.width).astype(np.int32)
+        current = self.hit_grid[iy_obs, ix_obs].astype(np.int32)
+        decayed = np.maximum(0, current - self.hit_decay_per_frame).astype(np.uint16)
+        self.hit_grid[iy_obs, ix_obs] = decayed
 
     def cloud_callback(self, msg):
         self.received_clouds += 1
@@ -380,17 +472,44 @@ class SliceMapper(Node):
             return
 
         if self.use_relative_height:
-            height_above_ground = self._height_above_ground(x, y, z, base_mask)
+            height_above_ground, ground_info = self._height_above_ground(x, y, z, base_mask)
+            if not ground_info['quality_ok']:
+                self._decay_observed_cells(x, y, base_mask, np.array([], dtype=np.int64))
+                self.cloud_count += 1
+                self._maybe_log_mapping_debug(
+                    count,
+                    int(np.count_nonzero(base_mask)),
+                    ground_info,
+                    0,
+                    0,
+                )
+                self.get_logger().warn(
+                    f'skip cloud: poor ground fit ({ground_info["reason"]}), '
+                    f'inlier={ground_info["inlier_ratio"]:.2f}, '
+                    f'std={ground_info["residual_std"]:.3f}m',
+                    throttle_duration_sec=2.0,
+                )
+                return
             mask = (
                 base_mask &
                 (height_above_ground >= self.obstacle_min_height) &
                 (height_above_ground <= self.obstacle_max_height)
             )
         else:
+            ground_info = self._ground_debug(reason='absolute_z')
+            height_above_ground = z
             mask = base_mask & (z >= self.z_min) & (z <= self.z_max)
 
         if not np.any(mask):
+            self._decay_observed_cells(x, y, base_mask, np.array([], dtype=np.int64))
             self.cloud_count += 1
+            self._maybe_log_mapping_debug(
+                count,
+                int(np.count_nonzero(base_mask)),
+                ground_info,
+                0,
+                0,
+            )
             return
 
         self._publish_obstacle_cloud(msg, x, y, z, mask)
@@ -399,16 +518,55 @@ class SliceMapper(Node):
         iy = np.floor((y[mask] - self.origin_y) / self.resolution).astype(np.int32)
         inside = (ix >= 0) & (ix < self.width) & (iy >= 0) & (iy < self.height)
         if not np.any(inside):
+            self._decay_observed_cells(x, y, base_mask, np.array([], dtype=np.int64))
             self.cloud_count += 1
+            self._maybe_log_mapping_debug(
+                count,
+                int(np.count_nonzero(base_mask)),
+                ground_info,
+                int(np.count_nonzero(mask)),
+                0,
+            )
             return
 
         iy_inside = iy[inside]
         ix_inside = ix[inside]
-        np.add.at(self.hit_grid, (iy_inside, ix_inside), 1)
+        height_inside = height_above_ground[mask][inside]
+        cell_ids = (iy_inside * self.width + ix_inside).astype(np.int64)
+        unique_ids, counts = np.unique(cell_ids, return_counts=True)
+        max_heights = np.full(unique_ids.shape, -np.inf, dtype=np.float32)
+        inverse = np.searchsorted(unique_ids, cell_ids)
+        np.maximum.at(max_heights, inverse, height_inside.astype(np.float32, copy=False))
+        required_counts = np.full(unique_ids.shape, self.min_points_per_cell, dtype=np.int32)
+        required_counts[max_heights < self.low_obstacle_height] += self.low_obstacle_extra_points
+        accepted_cells = unique_ids[counts >= required_counts]
+
+        self._decay_observed_cells(x, y, base_mask, accepted_cells)
+        if accepted_cells.size <= 0:
+            self.cloud_count += 1
+            self._maybe_log_mapping_debug(
+                count,
+                int(np.count_nonzero(base_mask)),
+                ground_info,
+                int(np.count_nonzero(mask)),
+                0,
+            )
+            return
+
+        iy_cells = (accepted_cells // self.width).astype(np.int32)
+        ix_cells = (accepted_cells % self.width).astype(np.int32)
+        np.add.at(self.hit_grid, (iy_cells, ix_cells), 1)
         np.minimum(self.hit_grid, self.max_hit_count, out=self.hit_grid)
         self._clear_robot_footprint()
         self.cloud_count += 1
-        self.accepted_points += int(inside.sum())
+        self.accepted_points += int(accepted_cells.size)
+        self._maybe_log_mapping_debug(
+            count,
+            int(np.count_nonzero(base_mask)),
+            ground_info,
+            int(np.count_nonzero(mask)),
+            int(accepted_cells.size),
+        )
 
     def _inflated_occupancy(self):
         occupied = self.hit_grid >= self.hit_threshold
